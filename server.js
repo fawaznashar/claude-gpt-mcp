@@ -19,6 +19,28 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// --- Image model guard ---------------------------------------------------
+// The Images API (images.generate / images.edit) ONLY accepts image models
+// (gpt-image-* or dall-e-*). A text/Responses model like "gpt-5.5" will be
+// rejected with: 400 The model 'gpt-5.5' does not exist.
+// This guard ignores any non-image value in OPENAI_IMAGE_MODEL and safely
+// falls back to gpt-image-1, so a bad env var can never break image tools.
+const VALID_IMAGE_MODEL_PREFIXES = ["gpt-image", "dall-e"];
+
+function resolveImageModel() {
+  const requested = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+  const isValid = VALID_IMAGE_MODEL_PREFIXES.some((p) => requested.startsWith(p));
+  if (!isValid) {
+    console.warn(
+      `WARNING: OPENAI_IMAGE_MODEL="${requested}" is not a valid image model. ` +
+        `Falling back to "gpt-image-1". Images API accepts only gpt-image-* or dall-e-* models.`
+    );
+    return "gpt-image-1";
+  }
+  return requested;
+}
+// -------------------------------------------------------------------------
+
 function getBaseUrl() {
   return process.env.PUBLIC_BASE_URL || "https://claude-gpt-mcp.onrender.com";
 }
@@ -202,7 +224,7 @@ function saveImageBase64(imageBase64) {
 }
 
 async function generateAvatarImageWithReference(prompt) {
-  const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+  const model = resolveImageModel();
   const avatarReferenceFile = await getAvatarReferenceFile();
 
   const result = await openai.images.edit({
@@ -217,7 +239,7 @@ async function generateAvatarImageWithReference(prompt) {
 }
 
 async function generateAvatarImageTextOnly(prompt) {
-  const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+  const model = resolveImageModel();
 
   const result = await openai.images.generate({
     model,
@@ -477,7 +499,7 @@ Provider:
 OpenAI
 
 Model:
-${process.env.OPENAI_IMAGE_MODEL || "gpt-image-1"}
+${resolveImageModel()}
 
 Generation Mode:
 ${generationMode}
@@ -836,7 +858,7 @@ app.get("/health", (req, res) => {
     avatar_reference_mode: "image_edit",
     image_provider: process.env.IMAGE_PROVIDER || "openai",
     model: process.env.OPENAI_MODEL || "gpt-5.5",
-    image_model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-1",
+    image_model: resolveImageModel(),
     image_size: process.env.OPENAI_IMAGE_SIZE || "1024x1024",
     save_mode: "google_sheets_only",
     version: "2.1.0",
