@@ -30,44 +30,74 @@ function getGoogleAuth() {
 
   return new google.auth.GoogleAuth({
     credentials,
-    scopes: [
-      "https://www.googleapis.com/auth/documents",
-      "https://www.googleapis.com/auth/drive",
-      "https://www.googleapis.com/auth/spreadsheets",
-    ],
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 }
 
-async function createGoogleDocInFolder(drive, title, folderId) {
-  const file = await drive.files.create({
-    requestBody: {
-      name: title,
-      mimeType: "application/vnd.google-apps.document",
-      parents: folderId ? [folderId] : undefined,
-    },
-    fields: "id, webViewLink",
+async function ensureKnowledgeBankHeader(sheets, spreadsheetId) {
+  const header = [
+    "ID",
+    "Course Name",
+    "Lesson Title",
+    "Source",
+    "Skills",
+    "Skill Level",
+    "Concepts",
+    "Exercises",
+    "Customer Journey Stage",
+    "Teaching Style",
+    "Digital Product Ideas",
+    "Next Lessons",
+    "Summary",
+    "Full Knowledge Card",
+    "Date",
+  ];
+
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Knowledge Bank!A1:O1",
+    });
+  } catch {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            updateSheetProperties: {
+              properties: {
+                sheetId: 0,
+                title: "Knowledge Bank",
+              },
+              fields: "title",
+            },
+          },
+        ],
+      },
+    });
+  }
+
+  const existingHeader = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: "Knowledge Bank!A1:O1",
   });
 
-  return file.data;
-}
-
-async function createGoogleSheetInFolder(drive, title, folderId) {
-  const file = await drive.files.create({
-    requestBody: {
-      name: title,
-      mimeType: "application/vnd.google-apps.spreadsheet",
-      parents: folderId ? [folderId] : undefined,
-    },
-    fields: "id, webViewLink",
-  });
-
-  return file.data;
+  if (!existingHeader.data.values || existingHeader.data.values.length === 0) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: "Knowledge Bank!A1:O1",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [header],
+      },
+    });
+  }
 }
 
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "1.6.0",
+    version: "1.7.0",
   });
 
   server.tool(
@@ -83,7 +113,12 @@ function createMcpServer() {
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No response returned from GPT." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No response returned from GPT.",
+          },
+        ],
       };
     }
   );
@@ -134,7 +169,12 @@ ${transcript}
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No analysis returned." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No analysis returned.",
+          },
+        ],
       };
     }
   );
@@ -199,7 +239,12 @@ ${content_summary}
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No governance brief returned." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No governance brief returned.",
+          },
+        ],
       };
     }
   );
@@ -244,7 +289,12 @@ ${context}
 `;
 
       return {
-        content: [{ type: "text", text: prompt }],
+        content: [
+          {
+            type: "text",
+            text: prompt,
+          },
+        ],
       };
     }
   );
@@ -298,14 +348,19 @@ ${design_description}
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No design review returned." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No design review returned.",
+          },
+        ],
       };
     }
   );
 
   server.tool(
     "save_knowledge_card",
-    "Save a Knowledge Card into Google Docs and Google Sheets.",
+    "Save a Knowledge Card into the existing Google Sheets Knowledge Bank only.",
     {
       course_name: z.string(),
       lesson_title: z.string(),
@@ -320,7 +375,6 @@ ${design_description}
       next_lessons: z.string().optional(),
       summary: z.string(),
       full_knowledge_card: z.string(),
-      drive_folder_id: z.string().optional(),
       knowledge_bank_sheet_id: z.string().optional(),
     },
     async ({
@@ -337,67 +391,19 @@ ${design_description}
       next_lessons,
       summary,
       full_knowledge_card,
-      drive_folder_id,
       knowledge_bank_sheet_id,
     }) => {
       const auth = getGoogleAuth();
-      const docs = google.docs({ version: "v1", auth });
-      const drive = google.drive({ version: "v3", auth });
       const sheets = google.sheets({ version: "v4", auth });
 
-      const folderId = drive_folder_id || process.env.GOOGLE_DRIVE_FOLDER_ID || "";
-      let spreadsheetId = knowledge_bank_sheet_id || process.env.KNOWLEDGE_BANK_SHEET_ID || "";
+      const spreadsheetId =
+        knowledge_bank_sheet_id || process.env.KNOWLEDGE_BANK_SHEET_ID || "";
 
       if (!spreadsheetId) {
-        const sheetFile = await createGoogleSheetInFolder(
-          drive,
-          "Knowledge Engine Bank",
-          folderId
-        );
-
-        spreadsheetId = sheetFile.id;
-
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId,
-          requestBody: {
-            requests: [
-              {
-                updateSheetProperties: {
-                  properties: {
-                    sheetId: 0,
-                    title: "Knowledge Bank",
-                  },
-                  fields: "title",
-                },
-              },
-            ],
-          },
-        });
-
-        await sheets.spreadsheets.values.update({
-          spreadsheetId,
-          range: "Knowledge Bank!A1:N1",
-          valueInputOption: "RAW",
-          requestBody: {
-            values: [[
-              "ID",
-              "Course Name",
-              "Lesson Title",
-              "Source",
-              "Skills",
-              "Skill Level",
-              "Concepts",
-              "Exercises",
-              "Customer Journey Stage",
-              "Teaching Style",
-              "Digital Product Ideas",
-              "Next Lessons",
-              "Summary",
-              "Date",
-            ]],
-          },
-        });
+        throw new Error("KNOWLEDGE_BANK_SHEET_ID is missing.");
       }
+
+      await ensureKnowledgeBankHeader(sheets, spreadsheetId);
 
       const existingRows = await sheets.spreadsheets.values.get({
         spreadsheetId,
@@ -408,94 +414,34 @@ ${design_description}
       const cardId = `KC-${String(rowCount + 1).padStart(3, "0")}`;
       const today = new Date().toISOString().slice(0, 10);
 
-      const docTitle = `${cardId} - ${course_name} - ${lesson_title}`;
-
-      const docFile = await createGoogleDocInFolder(drive, docTitle, folderId);
-      const documentId = docFile.id;
-
-      const docBody = `
-${docTitle}
-
-Course Name:
-${course_name}
-
-Lesson Title:
-${lesson_title}
-
-Source:
-${source || ""}
-
-Skills:
-${skills || ""}
-
-Skill Level:
-${skill_level || ""}
-
-Concepts:
-${concepts || ""}
-
-Exercises:
-${exercises || ""}
-
-Customer Journey Stage:
-${customer_journey_stage || ""}
-
-Teaching Style:
-${teaching_style || ""}
-
-Digital Product Ideas:
-${digital_product_ideas || ""}
-
-Next Lessons:
-${next_lessons || ""}
-
-Summary:
-${summary}
-
-Full Knowledge Card:
-${full_knowledge_card}
-`;
-
-      await docs.documents.batchUpdate({
-        documentId,
+      await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: "Knowledge Bank!A:O",
+        valueInputOption: "RAW",
+        insertDataOption: "INSERT_ROWS",
         requestBody: {
-          requests: [
-            {
-              insertText: {
-                location: { index: 1 },
-                text: docBody,
-              },
-            },
+          values: [
+            [
+              cardId,
+              course_name,
+              lesson_title,
+              source || "",
+              skills || "",
+              skill_level || "",
+              concepts || "",
+              exercises || "",
+              customer_journey_stage || "",
+              teaching_style || "",
+              digital_product_ideas || "",
+              next_lessons || "",
+              summary,
+              full_knowledge_card,
+              today,
+            ],
           ],
         },
       });
 
-      await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: "Knowledge Bank!A:N",
-        valueInputOption: "RAW",
-        insertDataOption: "INSERT_ROWS",
-        requestBody: {
-          values: [[
-            cardId,
-            course_name,
-            lesson_title,
-            source || "",
-            skills || "",
-            skill_level || "",
-            concepts || "",
-            exercises || "",
-            customer_journey_stage || "",
-            teaching_style || "",
-            digital_product_ideas || "",
-            next_lessons || "",
-            summary,
-            today,
-          ]],
-        },
-      });
-
-      const docUrl = `https://docs.google.com/document/d/${documentId}/edit`;
       const sheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
 
       return {
@@ -508,15 +454,14 @@ Knowledge Card Saved Successfully.
 ID:
 ${cardId}
 
-Google Doc:
-${docUrl}
+Saved To:
+Google Sheets Knowledge Bank
 
 Knowledge Bank Sheet:
 ${sheetUrl}
 
-Important:
-If this is the first time and a new sheet was created, save this in Render:
-KNOWLEDGE_BANK_SHEET_ID=${spreadsheetId}
+Note:
+This version saves to Google Sheets only. Google Docs creation is disabled temporarily to avoid Drive quota issues.
 `,
           },
         ],
@@ -539,6 +484,7 @@ app.get("/health", (req, res) => {
     google_drive_folder_loaded: Boolean(process.env.GOOGLE_DRIVE_FOLDER_ID),
     knowledge_bank_sheet_loaded: Boolean(process.env.KNOWLEDGE_BANK_SHEET_ID),
     model: process.env.OPENAI_MODEL || "gpt-5.5",
+    save_mode: "google_sheets_only",
     tools: [
       "ask_gpt",
       "analyze_lesson_to_lab",
