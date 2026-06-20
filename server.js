@@ -3,6 +3,8 @@ import express from "express";
 import OpenAI from "openai";
 import { google } from "googleapis";
 import { z } from "zod";
+import fs from "fs";
+import path from "path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
@@ -94,10 +96,95 @@ async function ensureKnowledgeBankHeader(sheets, spreadsheetId) {
   }
 }
 
+function buildAvatarPrompt({ topic, emotion, pose, scene, output_type, extra_instructions }) {
+  const avatarImageUrl = process.env.AVATAR_IMAGE_URL || "";
+  const avatarStyle = process.env.AVATAR_STYLE || "Looney Tunes Style";
+  const avatarName = process.env.AVATAR_NAME || "Fawaz Avatar";
+
+  return `
+Create an image using the fixed reference avatar.
+
+Reference Avatar URL:
+${avatarImageUrl}
+
+Avatar Name:
+${avatarName}
+
+Visual Style:
+${avatarStyle}
+
+Core Identity Rules:
+- Keep the same avatar identity.
+- Do not redesign the face.
+- Do not change the character identity.
+- Only change the expression, emotion, pose, outfit details, and scene based on the topic.
+- Keep the avatar suitable for educational and professional content.
+
+Topic:
+${topic}
+
+Emotion:
+${emotion}
+
+Pose:
+${pose}
+
+Scene:
+${scene}
+
+Output Type:
+${output_type}
+
+Extra Instructions:
+${extra_instructions || "No extra instructions."}
+
+Image Requirements:
+- High quality.
+- Clean composition.
+- Strong visual storytelling.
+- Suitable for thumbnails, course banners, social posts, and educational content.
+- Make the avatar expressive and clearly connected to the topic.
+`;
+}
+
+async function generateImageWithOpenAI(prompt) {
+  const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+
+  const result = await openai.images.generate({
+    model,
+    prompt,
+    size: "1024x1024",
+  });
+
+  const imageBase64 = result.data?.[0]?.b64_json;
+
+  if (!imageBase64) {
+    throw new Error("No image returned from OpenAI.");
+  }
+
+  const generatedDir = process.env.GENERATED_IMAGES_DIR || "generated_images";
+  const outputDir = path.join(process.cwd(), generatedDir);
+
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  const fileName = `avatar-${Date.now()}.png`;
+  const filePath = path.join(outputDir, fileName);
+
+  fs.writeFileSync(filePath, Buffer.from(imageBase64, "base64"));
+
+  return {
+    fileName,
+    filePath,
+    localUrl: `/${generatedDir}/${fileName}`,
+  };
+}
+
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "1.7.0",
+    version: "1.8.0",
   });
 
   server.tool(
@@ -113,12 +200,7 @@ function createMcpServer() {
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No response returned from GPT.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No response returned from GPT." }],
       };
     }
   );
@@ -169,12 +251,7 @@ ${transcript}
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No analysis returned.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No analysis returned." }],
       };
     }
   );
@@ -239,12 +316,7 @@ ${content_summary}
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No governance brief returned.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No governance brief returned." }],
       };
     }
   );
@@ -253,46 +325,84 @@ ${content_summary}
     "avatar_prompt",
     "Generate a reusable prompt using the fixed Fawaz Avatar reference.",
     {
-      emotion: z.string(),
-      pose: z.string(),
-      context: z.string(),
+      topic: z.string(),
+      emotion: z.string().default("confident"),
+      pose: z.string().default("standing and explaining"),
+      scene: z.string().default("modern digital classroom"),
+      output_type: z.string().default("educational thumbnail"),
+      extra_instructions: z.string().optional(),
     },
-    async ({ emotion, pose, context }) => {
-      const avatarImageUrl = process.env.AVATAR_IMAGE_URL || "No avatar URL configured";
-      const avatarStyle = process.env.AVATAR_STYLE || "Looney Tunes Style";
-      const avatarName = process.env.AVATAR_NAME || "Fawaz Avatar";
+    async ({ topic, emotion, pose, scene, output_type, extra_instructions }) => {
+      const prompt = buildAvatarPrompt({
+        topic,
+        emotion,
+        pose,
+        scene,
+        output_type,
+        extra_instructions,
+      });
 
-      const prompt = `
-Use the fixed reference avatar image:
-${avatarImageUrl}
+      return {
+        content: [{ type: "text", text: prompt }],
+      };
+    }
+  );
 
-Character Name:
-${avatarName}
+  server.tool(
+    "generate_avatar_image",
+    "Generate an image using the fixed Fawaz Avatar identity and OpenAI image generation.",
+    {
+      topic: z.string(),
+      emotion: z.string().default("confident"),
+      pose: z.string().default("standing and explaining"),
+      scene: z.string().default("modern digital classroom"),
+      output_type: z.string().default("educational thumbnail"),
+      extra_instructions: z.string().optional(),
+    },
+    async ({ topic, emotion, pose, scene, output_type, extra_instructions }) => {
+      if (!process.env.AVATAR_IMAGE_URL) {
+        throw new Error("AVATAR_IMAGE_URL is missing.");
+      }
 
-Visual Style:
-${avatarStyle}
+      const prompt = buildAvatarPrompt({
+        topic,
+        emotion,
+        pose,
+        scene,
+        output_type,
+        extra_instructions,
+      });
 
-Rules:
-- Never redesign the face.
-- Keep the same identity.
-- Change only expression, pose, and scene.
-- Preserve the same avatar across all future content.
-
-Emotion:
-${emotion}
-
-Pose:
-${pose}
-
-Context:
-${context}
-`;
+      const image = await generateImageWithOpenAI(prompt);
 
       return {
         content: [
           {
             type: "text",
-            text: prompt,
+            text: `
+Avatar Image Generated Successfully.
+
+Provider:
+OpenAI
+
+Model:
+${process.env.OPENAI_IMAGE_MODEL || "gpt-image-1"}
+
+Avatar:
+${process.env.AVATAR_NAME || "Fawaz Avatar"}
+
+Style:
+${process.env.AVATAR_STYLE || "Looney Tunes Style"}
+
+File:
+${image.fileName}
+
+Local URL:
+${image.localUrl}
+
+Prompt Used:
+${prompt}
+`,
           },
         ],
       };
@@ -348,12 +458,7 @@ ${design_description}
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No design review returned.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No design review returned." }],
       };
     }
   );
@@ -396,8 +501,7 @@ ${design_description}
       const auth = getGoogleAuth();
       const sheets = google.sheets({ version: "v4", auth });
 
-      const spreadsheetId =
-        knowledge_bank_sheet_id || process.env.KNOWLEDGE_BANK_SHEET_ID || "";
+      const spreadsheetId = knowledge_bank_sheet_id || process.env.KNOWLEDGE_BANK_SHEET_ID || "";
 
       if (!spreadsheetId) {
         throw new Error("KNOWLEDGE_BANK_SHEET_ID is missing.");
@@ -472,6 +576,9 @@ This version saves to Google Sheets only. Google Docs creation is disabled tempo
   return server;
 }
 
+const generatedDir = process.env.GENERATED_IMAGES_DIR || "generated_images";
+app.use(`/${generatedDir}`, express.static(path.join(process.cwd(), generatedDir)));
+
 app.get("/", (req, res) => {
   res.status(200).send("Claude GPT MCP server is running. MCP endpoint: /mcp");
 });
@@ -483,13 +590,17 @@ app.get("/health", (req, res) => {
     google_service_account_loaded: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
     google_drive_folder_loaded: Boolean(process.env.GOOGLE_DRIVE_FOLDER_ID),
     knowledge_bank_sheet_loaded: Boolean(process.env.KNOWLEDGE_BANK_SHEET_ID),
+    avatar_image_loaded: Boolean(process.env.AVATAR_IMAGE_URL),
+    image_provider: process.env.IMAGE_PROVIDER || "openai",
     model: process.env.OPENAI_MODEL || "gpt-5.5",
+    image_model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-1",
     save_mode: "google_sheets_only",
     tools: [
       "ask_gpt",
       "analyze_lesson_to_lab",
       "design_governance",
       "avatar_prompt",
+      "generate_avatar_image",
       "design_review",
       "save_knowledge_card",
     ],
