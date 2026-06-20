@@ -19,7 +19,7 @@ const openai = new OpenAI({
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "1.2.0",
+    version: "1.3.0",
   });
 
   server.tool(
@@ -35,12 +35,7 @@ function createMcpServer() {
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No response returned from GPT.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No response returned from GPT." }],
       };
     }
   );
@@ -100,12 +95,7 @@ ${transcript}
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No analysis returned.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No analysis returned." }],
       };
     }
   );
@@ -199,12 +189,56 @@ ${content_summary}
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No governance brief returned.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No governance brief returned." }],
+      };
+    }
+  );
+
+  server.tool(
+    "avatar_prompt",
+    "Generate a reusable prompt using the fixed Fawaz Avatar reference.",
+    {
+      emotion: z.string().describe("Avatar emotion such as happy, thinking, confident, serious, surprised, excited."),
+      pose: z.string().describe("Avatar pose such as presenter, explaining, pointing, planning, sitting."),
+      context: z.string().describe("The scene or content context where the avatar will be used."),
+    },
+    async ({ emotion, pose, context }) => {
+      const avatarImageUrl = process.env.AVATAR_IMAGE_URL || "No avatar URL configured";
+      const avatarStyle = process.env.AVATAR_STYLE || "Looney Tunes Style";
+      const avatarName = process.env.AVATAR_NAME || "Fawaz Avatar";
+
+      const prompt = `
+Use the fixed reference avatar image:
+
+${avatarImageUrl}
+
+Character Name:
+${avatarName}
+
+Visual Style:
+${avatarStyle}
+
+Rules:
+- Never redesign the face.
+- Keep the same identity.
+- Change only expression, pose, and scene.
+- Preserve the same avatar across all future content.
+- Use the reference image as the visual identity anchor.
+
+Emotion:
+${emotion}
+
+Pose:
+${pose}
+
+Context:
+${context}
+
+Generate a polished visual prompt suitable for Canva, image generation, or social media content.
+`;
+
+      return {
+        content: [{ type: "text", text: prompt }],
       };
     }
   );
@@ -221,7 +255,7 @@ app.get("/health", (req, res) => {
     status: "ok",
     openai_key_loaded: Boolean(process.env.OPENAI_API_KEY),
     model: process.env.OPENAI_MODEL || "gpt-5.5",
-    tools: ["ask_gpt", "analyze_lesson_to_lab", "design_governance"],
+    tools: ["ask_gpt", "analyze_lesson_to_lab", "design_governance", "avatar_prompt"],
   });
 });
 
