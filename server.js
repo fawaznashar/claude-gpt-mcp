@@ -38,38 +38,36 @@ function getGoogleAuth() {
   });
 }
 
-async function moveFileToFolder(drive, fileId, folderId) {
-  if (!folderId) return;
-
-  const file = await drive.files.get({
-    fileId,
-    fields: "parents",
+async function createGoogleDocInFolder(drive, title, folderId) {
+  const file = await drive.files.create({
+    requestBody: {
+      name: title,
+      mimeType: "application/vnd.google-apps.document",
+      parents: folderId ? [folderId] : undefined,
+    },
+    fields: "id, webViewLink",
   });
 
-  const previousParents = (file.data.parents || []).join(",");
-
-  await drive.files.update({
-    fileId,
-    addParents: folderId,
-    removeParents: previousParents,
-    fields: "id, parents",
-  });
+  return file.data;
 }
 
-async function makeFileReadableByLink(drive, fileId) {
-  await drive.permissions.create({
-    fileId,
+async function createGoogleSheetInFolder(drive, title, folderId) {
+  const file = await drive.files.create({
     requestBody: {
-      role: "reader",
-      type: "anyone",
+      name: title,
+      mimeType: "application/vnd.google-apps.spreadsheet",
+      parents: folderId ? [folderId] : undefined,
     },
+    fields: "id, webViewLink",
   });
+
+  return file.data;
 }
 
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "1.5.0",
+    version: "1.6.0",
   });
 
   server.tool(
@@ -351,22 +349,30 @@ ${design_description}
       let spreadsheetId = knowledge_bank_sheet_id || process.env.KNOWLEDGE_BANK_SHEET_ID || "";
 
       if (!spreadsheetId) {
-        const spreadsheet = await sheets.spreadsheets.create({
+        const sheetFile = await createGoogleSheetInFolder(
+          drive,
+          "Knowledge Engine Bank",
+          folderId
+        );
+
+        spreadsheetId = sheetFile.id;
+
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
           requestBody: {
-            properties: {
-              title: "Knowledge Engine Bank",
-            },
-            sheets: [
+            requests: [
               {
-                properties: {
-                  title: "Knowledge Bank",
+                updateSheetProperties: {
+                  properties: {
+                    sheetId: 0,
+                    title: "Knowledge Bank",
+                  },
+                  fields: "title",
                 },
               },
             ],
           },
         });
-
-        spreadsheetId = spreadsheet.data.spreadsheetId;
 
         await sheets.spreadsheets.values.update({
           spreadsheetId,
@@ -391,12 +397,6 @@ ${design_description}
             ]],
           },
         });
-
-        if (folderId) {
-          await moveFileToFolder(drive, spreadsheetId, folderId);
-        }
-
-        await makeFileReadableByLink(drive, spreadsheetId);
       }
 
       const existingRows = await sheets.spreadsheets.values.get({
@@ -410,13 +410,8 @@ ${design_description}
 
       const docTitle = `${cardId} - ${course_name} - ${lesson_title}`;
 
-      const doc = await docs.documents.create({
-        requestBody: {
-          title: docTitle,
-        },
-      });
-
-      const documentId = doc.data.documentId;
+      const docFile = await createGoogleDocInFolder(drive, docTitle, folderId);
+      const documentId = docFile.id;
 
       const docBody = `
 ${docTitle}
@@ -429,6 +424,30 @@ ${lesson_title}
 
 Source:
 ${source || ""}
+
+Skills:
+${skills || ""}
+
+Skill Level:
+${skill_level || ""}
+
+Concepts:
+${concepts || ""}
+
+Exercises:
+${exercises || ""}
+
+Customer Journey Stage:
+${customer_journey_stage || ""}
+
+Teaching Style:
+${teaching_style || ""}
+
+Digital Product Ideas:
+${digital_product_ideas || ""}
+
+Next Lessons:
+${next_lessons || ""}
 
 Summary:
 ${summary}
@@ -443,21 +462,13 @@ ${full_knowledge_card}
           requests: [
             {
               insertText: {
-                location: {
-                  index: 1,
-                },
+                location: { index: 1 },
                 text: docBody,
               },
             },
           ],
         },
       });
-
-      if (folderId) {
-        await moveFileToFolder(drive, documentId, folderId);
-      }
-
-      await makeFileReadableByLink(drive, documentId);
 
       await sheets.spreadsheets.values.append({
         spreadsheetId,
@@ -525,6 +536,8 @@ app.get("/health", (req, res) => {
     status: "ok",
     openai_key_loaded: Boolean(process.env.OPENAI_API_KEY),
     google_service_account_loaded: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+    google_drive_folder_loaded: Boolean(process.env.GOOGLE_DRIVE_FOLDER_ID),
+    knowledge_bank_sheet_loaded: Boolean(process.env.KNOWLEDGE_BANK_SHEET_ID),
     model: process.env.OPENAI_MODEL || "gpt-5.5",
     tools: [
       "ask_gpt",
