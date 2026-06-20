@@ -1,3 +1,10 @@
+GITHUB_TOKEN
+GITHUB_OWNER=fawaznashar
+GITHUB_REPO=claude-gpt-mcp
+GITHUB_BRANCH=main
+GENERATED_IMAGES_DIR=assets/generated
+IMAGE_PROVIDER=openai
+OPENAI_IMAGE_MODEL=gpt-image-1
 import "dotenv/config";
 import express from "express";
 import OpenAI from "openai";
