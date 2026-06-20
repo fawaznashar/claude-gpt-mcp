@@ -1,13 +1,7 @@
-GITHUB_TOKEN
-GITHUB_OWNER=fawaznashar
-GITHUB_REPO=claude-gpt-mcp
-GITHUB_BRANCH=main
-GENERATED_IMAGES_DIR=assets/generated
-IMAGE_PROVIDER=openai
-OPENAI_IMAGE_MODEL=gpt-image-1
 import "dotenv/config";
 import express from "express";
 import OpenAI from "openai";
+import { google } from "googleapis";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -23,10 +17,59 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+function getGoogleAuth() {
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is missing.");
+  }
+
+  const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+
+  if (credentials.private_key) {
+    credentials.private_key = credentials.private_key.replace(/\\n/g, "\n");
+  }
+
+  return new google.auth.GoogleAuth({
+    credentials,
+    scopes: [
+      "https://www.googleapis.com/auth/documents",
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ],
+  });
+}
+
+async function moveFileToFolder(drive, fileId, folderId) {
+  if (!folderId) return;
+
+  const file = await drive.files.get({
+    fileId,
+    fields: "parents",
+  });
+
+  const previousParents = (file.data.parents || []).join(",");
+
+  await drive.files.update({
+    fileId,
+    addParents: folderId,
+    removeParents: previousParents,
+    fields: "id, parents",
+  });
+}
+
+async function makeFileReadableByLink(drive, fileId) {
+  await drive.permissions.create({
+    fileId,
+    requestBody: {
+      role: "reader",
+      type: "anyone",
+    },
+  });
+}
+
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "1.4.0",
+    version: "1.5.0",
   });
 
   server.tool(
@@ -42,12 +85,7 @@ function createMcpServer() {
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No response returned from GPT.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No response returned from GPT." }],
       };
     }
   );
@@ -56,10 +94,10 @@ function createMcpServer() {
     "analyze_lesson_to_lab",
     "Analyze an Arabic course lesson transcript, extract skills, build a knowledge card, and generate a learning report.",
     {
-      lesson_title: z.string().describe("Title of the lesson or video."),
-      course_name: z.string().optional().describe("Name of the course if available."),
-      target_audience: z.string().optional().describe("Who this lesson is for."),
-      transcript: z.string().min(50).describe("Full lesson transcript from YouTube or any course."),
+      lesson_title: z.string(),
+      course_name: z.string().optional(),
+      target_audience: z.string().optional(),
+      transcript: z.string().min(50),
     },
     async ({ lesson_title, course_name, target_audience, transcript }) => {
       const prompt = `
@@ -81,24 +119,15 @@ ${transcript}
 
 أخرج النتيجة بالعربية وبصيغة منظمة تشمل:
 1. ملخص تنفيذي للدرس
-2. المهارات المستخرجة:
-- اسم المهارة
-- نوعها
-- المستوى
-- أين ظهرت في الدرس
-- كيف نستفيد منها عمليًا
+2. المهارات المستخرجة
 3. المفاهيم الجوهرية
 4. خطوات قابلة للتطبيق
 5. تمارين عملية
 6. أسئلة اختبار
 7. أسلوب المدرب
-8. رحلة العميل المرتبطة بالدرس
+8. رحلة العميل
 9. بطاقة معرفة Knowledge Card
-10. تقرير الاستفادة:
-- مهارات جديدة
-- مهارات تم تعزيزها
-- فرص تحويل الدرس إلى دورة أو منتج رقمي
-- اقتراحات لدروس تالية
+10. فرص المنتجات الرقمية والدروس التالية
 `;
 
       const response = await openai.responses.create({
@@ -107,12 +136,7 @@ ${transcript}
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No analysis returned.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No analysis returned." }],
       };
     }
   );
@@ -121,13 +145,13 @@ ${transcript}
     "design_governance",
     "Create a visual governance brief and QA checklist before any design is generated.",
     {
-      project_name: z.string().describe("Name of the design project."),
-      design_goal: z.string().describe("The purpose of the design."),
-      target_audience: z.string().describe("Who will see or use this design."),
-      content_summary: z.string().describe("Summary of the content that will be designed."),
-      design_format: z.string().optional().describe("Post, slide, course cover, infographic, landing page, etc."),
-      preferred_style: z.string().optional().describe("Preferred visual style."),
-      forbidden_elements: z.string().optional().describe("Things that must not appear in the design."),
+      project_name: z.string(),
+      design_goal: z.string(),
+      target_audience: z.string(),
+      content_summary: z.string(),
+      design_format: z.string().optional(),
+      preferred_style: z.string().optional(),
+      forbidden_elements: z.string().optional(),
     },
     async ({
       project_name,
@@ -139,7 +163,7 @@ ${transcript}
       forbidden_elements,
     }) => {
       const prompt = `
-أنت مسؤول حوكمة تصميم بصري. لا تصمم الصورة ولا العرض. مهمتك إنشاء بوابة اعتماد قبل التصميم.
+أنت مسؤول حوكمة تصميم بصري. لا تصمم الصورة ولا العرض.
 
 المشروع:
 ${project_name}
@@ -162,42 +186,13 @@ ${forbidden_elements || "غير محدد"}
 ملخص المحتوى:
 ${content_summary}
 
-أخرج النتيجة بالعربية وتشمل:
-
-1. قرار الحوكمة:
-- مسموح بالتصميم / يحتاج تعديل / مرفوض مؤقتًا
-
-2. Design Brief:
-- الهدف
-- الجمهور
-- الرسالة الأساسية
-- المقاس المقترح
-- الأسلوب البصري
-- الألوان المقترحة
-- نوع الخط
-- العناصر البصرية المسموحة
-- العناصر البصرية الممنوعة
-
-3. النصوص النهائية المقترحة للتصميم
-
-4. تعليمات دقيقة لأداة التصميم Canva/Gamma:
-- ماذا تصمم
-- ماذا تتجنب
-- توزيع العناصر
-- مستوى البساطة
-- الهوية البصرية
-
-5. Visual QA Checklist:
-- وضوح النص
-- عدم التشويه
-- اتساق الألوان
-- عدم وجود شخصيات عشوائية
-- مناسبة الجمهور
-- قابلية القراءة
-- عدم المبالغة في المؤثرات
-
-6. أمر الاعتماد:
-لا يتم تنفيذ التصميم إلا بعد أن يقول المستخدم نصًا: "اعتمد التصميم".
+أخرج:
+1. قرار الحوكمة
+2. Design Brief
+3. النصوص النهائية المقترحة
+4. تعليمات Canva/Gamma
+5. Visual QA Checklist
+6. أمر الاعتماد: لا يتم التنفيذ إلا بعد عبارة "اعتمد التصميم".
 `;
 
       const response = await openai.responses.create({
@@ -206,12 +201,7 @@ ${content_summary}
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No governance brief returned.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No governance brief returned." }],
       };
     }
   );
@@ -220,9 +210,9 @@ ${content_summary}
     "avatar_prompt",
     "Generate a reusable prompt using the fixed Fawaz Avatar reference.",
     {
-      emotion: z.string().describe("Avatar emotion such as happy, thinking, confident, serious, surprised, excited."),
-      pose: z.string().describe("Avatar pose such as presenter, explaining, pointing, planning, sitting."),
-      context: z.string().describe("The scene or content context where the avatar will be used."),
+      emotion: z.string(),
+      pose: z.string(),
+      context: z.string(),
     },
     async ({ emotion, pose, context }) => {
       const avatarImageUrl = process.env.AVATAR_IMAGE_URL || "No avatar URL configured";
@@ -231,7 +221,6 @@ ${content_summary}
 
       const prompt = `
 Use the fixed reference avatar image:
-
 ${avatarImageUrl}
 
 Character Name:
@@ -245,7 +234,6 @@ Rules:
 - Keep the same identity.
 - Change only expression, pose, and scene.
 - Preserve the same avatar across all future content.
-- Use the reference image as the visual identity anchor.
 
 Emotion:
 ${emotion}
@@ -255,42 +243,27 @@ ${pose}
 
 Context:
 ${context}
-
-Generate a polished visual prompt suitable for Canva, image generation, or social media content.
 `;
 
       return {
-        content: [
-          {
-            type: "text",
-            text: prompt,
-          },
-        ],
+        content: [{ type: "text", text: prompt }],
       };
     }
   );
 
   server.tool(
     "design_review",
-    "Review a generated design against brand governance, readability, visual hierarchy, engagement, and technical quality.",
+    "Review a generated design against brand governance and quality standards.",
     {
-      design_type: z.string().describe("Design type such as thumbnail, carousel, slide, infographic, landing page, course cover."),
-      design_goal: z.string().describe("The purpose of the design."),
-      target_audience: z.string().describe("Who will see or use this design."),
-      design_description: z.string().describe("Detailed description of the generated design, including text, layout, colors, avatar usage, and visual elements."),
-      brand_style: z.string().optional().describe("Brand style to compare against, default is Looney Tunes Style."),
+      design_type: z.string(),
+      design_goal: z.string(),
+      target_audience: z.string(),
+      design_description: z.string(),
+      brand_style: z.string().optional(),
     },
-    async ({
-      design_type,
-      design_goal,
-      target_audience,
-      design_description,
-      brand_style,
-    }) => {
+    async ({ design_type, design_goal, target_audience, design_description, brand_style }) => {
       const prompt = `
-أنت مراجع تصميم بصري محترف داخل نظام Knowledge Engine.
-
-مهمتك مراجعة التصميم بعد إنشائه، وليس إنشاء تصميم جديد.
+أنت مراجع تصميم بصري محترف.
 
 نوع التصميم:
 ${design_type}
@@ -298,83 +271,27 @@ ${design_type}
 هدف التصميم:
 ${design_goal}
 
-الجمهور المستهدف:
+الجمهور:
 ${target_audience}
 
-الأسلوب البصري المطلوب:
+الأسلوب:
 ${brand_style || process.env.AVATAR_STYLE || "Looney Tunes Style"}
 
 وصف التصميم:
 ${design_description}
 
-راجع التصميم بناءً على المعايير التالية:
-
-1. Brand Compliance / 100
-- هل التصميم ملتزم بالهوية؟
-- هل الأسلوب قريب من Looney Tunes Style إذا كان مطلوبًا؟
-- هل الأفاتار ثابت الهوية ولم يتم تغيير ملامحه؟
-
-2. Readability / 100
-- وضوح النص
-- حجم الخط
-- التباين
-- سهولة القراءة على الجوال
-
-3. Visual Hierarchy / 100
-- وضوح العنوان الرئيسي
-- ترتيب العناصر
-- توجيه عين المشاهد
-
-4. Engagement / 100
-- هل التصميم جذاب؟
-- هل يثير الفضول؟
-- هل مناسب للسوشال ميديا أو الاستخدام المطلوب؟
-
-5. Technical Quality / 100
-- المحاذاة
-- الهوامش
-- جودة الصور
-- عدم وجود تشويه
-- عدم وجود ازدحام بصري
-
-أخرج النتيجة بالعربية وبالشكل التالي:
-
-التقييم العام:
-/100
-
-Brand Compliance:
-/100
-
-Readability:
-/100
-
-Visual Hierarchy:
-/100
-
-Engagement:
-/100
-
-Technical Quality:
-/100
-
-نقاط القوة:
--
-
-المشاكل:
--
-
-التحسينات المطلوبة:
--
-
-القرار النهائي:
-PASS أو CONDITIONAL PASS أو REJECT
-
-قاعدة القرار:
-- PASS إذا كان التقييم العام 85 أو أعلى ولا توجد مشكلة جوهرية.
-- CONDITIONAL PASS إذا كان التقييم من 70 إلى 84 أو يحتاج تعديلات بسيطة.
-- REJECT إذا كان أقل من 70 أو توجد مشاكل جوهرية في الهوية أو القراءة.
-
-سبب القرار:
+أخرج:
+- التقييم العام /100
+- Brand Compliance /100
+- Readability /100
+- Visual Hierarchy /100
+- Engagement /100
+- Technical Quality /100
+- نقاط القوة
+- المشاكل
+- التحسينات
+- القرار النهائي: PASS أو CONDITIONAL PASS أو REJECT
+- سبب القرار
 `;
 
       const response = await openai.responses.create({
@@ -383,10 +300,213 @@ PASS أو CONDITIONAL PASS أو REJECT
       });
 
       return {
+        content: [{ type: "text", text: response.output_text || "No design review returned." }],
+      };
+    }
+  );
+
+  server.tool(
+    "save_knowledge_card",
+    "Save a Knowledge Card into Google Docs and Google Sheets.",
+    {
+      course_name: z.string(),
+      lesson_title: z.string(),
+      source: z.string().optional(),
+      skills: z.string().optional(),
+      skill_level: z.string().optional(),
+      concepts: z.string().optional(),
+      exercises: z.string().optional(),
+      customer_journey_stage: z.string().optional(),
+      teaching_style: z.string().optional(),
+      digital_product_ideas: z.string().optional(),
+      next_lessons: z.string().optional(),
+      summary: z.string(),
+      full_knowledge_card: z.string(),
+      drive_folder_id: z.string().optional(),
+      knowledge_bank_sheet_id: z.string().optional(),
+    },
+    async ({
+      course_name,
+      lesson_title,
+      source,
+      skills,
+      skill_level,
+      concepts,
+      exercises,
+      customer_journey_stage,
+      teaching_style,
+      digital_product_ideas,
+      next_lessons,
+      summary,
+      full_knowledge_card,
+      drive_folder_id,
+      knowledge_bank_sheet_id,
+    }) => {
+      const auth = getGoogleAuth();
+      const docs = google.docs({ version: "v1", auth });
+      const drive = google.drive({ version: "v3", auth });
+      const sheets = google.sheets({ version: "v4", auth });
+
+      const folderId = drive_folder_id || process.env.GOOGLE_DRIVE_FOLDER_ID || "";
+      let spreadsheetId = knowledge_bank_sheet_id || process.env.KNOWLEDGE_BANK_SHEET_ID || "";
+
+      if (!spreadsheetId) {
+        const spreadsheet = await sheets.spreadsheets.create({
+          requestBody: {
+            properties: {
+              title: "Knowledge Engine Bank",
+            },
+            sheets: [
+              {
+                properties: {
+                  title: "Knowledge Bank",
+                },
+              },
+            ],
+          },
+        });
+
+        spreadsheetId = spreadsheet.data.spreadsheetId;
+
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: "Knowledge Bank!A1:N1",
+          valueInputOption: "RAW",
+          requestBody: {
+            values: [[
+              "ID",
+              "Course Name",
+              "Lesson Title",
+              "Source",
+              "Skills",
+              "Skill Level",
+              "Concepts",
+              "Exercises",
+              "Customer Journey Stage",
+              "Teaching Style",
+              "Digital Product Ideas",
+              "Next Lessons",
+              "Summary",
+              "Date",
+            ]],
+          },
+        });
+
+        if (folderId) {
+          await moveFileToFolder(drive, spreadsheetId, folderId);
+        }
+
+        await makeFileReadableByLink(drive, spreadsheetId);
+      }
+
+      const existingRows = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: "Knowledge Bank!A2:A",
+      });
+
+      const rowCount = existingRows.data.values ? existingRows.data.values.length : 0;
+      const cardId = `KC-${String(rowCount + 1).padStart(3, "0")}`;
+      const today = new Date().toISOString().slice(0, 10);
+
+      const docTitle = `${cardId} - ${course_name} - ${lesson_title}`;
+
+      const doc = await docs.documents.create({
+        requestBody: {
+          title: docTitle,
+        },
+      });
+
+      const documentId = doc.data.documentId;
+
+      const docBody = `
+${docTitle}
+
+Course Name:
+${course_name}
+
+Lesson Title:
+${lesson_title}
+
+Source:
+${source || ""}
+
+Summary:
+${summary}
+
+Full Knowledge Card:
+${full_knowledge_card}
+`;
+
+      await docs.documents.batchUpdate({
+        documentId,
+        requestBody: {
+          requests: [
+            {
+              insertText: {
+                location: {
+                  index: 1,
+                },
+                text: docBody,
+              },
+            },
+          ],
+        },
+      });
+
+      if (folderId) {
+        await moveFileToFolder(drive, documentId, folderId);
+      }
+
+      await makeFileReadableByLink(drive, documentId);
+
+      await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: "Knowledge Bank!A:N",
+        valueInputOption: "RAW",
+        insertDataOption: "INSERT_ROWS",
+        requestBody: {
+          values: [[
+            cardId,
+            course_name,
+            lesson_title,
+            source || "",
+            skills || "",
+            skill_level || "",
+            concepts || "",
+            exercises || "",
+            customer_journey_stage || "",
+            teaching_style || "",
+            digital_product_ideas || "",
+            next_lessons || "",
+            summary,
+            today,
+          ]],
+        },
+      });
+
+      const docUrl = `https://docs.google.com/document/d/${documentId}/edit`;
+      const sheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+
+      return {
         content: [
           {
             type: "text",
-            text: response.output_text || "No design review returned.",
+            text: `
+Knowledge Card Saved Successfully.
+
+ID:
+${cardId}
+
+Google Doc:
+${docUrl}
+
+Knowledge Bank Sheet:
+${sheetUrl}
+
+Important:
+If this is the first time and a new sheet was created, save this in Render:
+KNOWLEDGE_BANK_SHEET_ID=${spreadsheetId}
+`,
           },
         ],
       };
@@ -404,6 +524,7 @@ app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
     openai_key_loaded: Boolean(process.env.OPENAI_API_KEY),
+    google_service_account_loaded: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
     model: process.env.OPENAI_MODEL || "gpt-5.5",
     tools: [
       "ask_gpt",
@@ -411,6 +532,7 @@ app.get("/health", (req, res) => {
       "design_governance",
       "avatar_prompt",
       "design_review",
+      "save_knowledge_card",
     ],
   });
 });
