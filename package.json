@@ -1,0 +1,17 @@
+{
+  "name": "claude-gpt-mcp",
+  "version": "1.0.0",
+  "description": "Remote MCP server that lets Claude call OpenAI GPT through MCP.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "openai": "^6.44.0",
+    "zod": "^4.2.0"
+  }
+}
