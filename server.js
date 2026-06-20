@@ -19,7 +19,7 @@ const openai = new OpenAI({
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "1.3.0",
+    version: "1.4.0",
   });
 
   server.tool(
@@ -35,7 +35,12 @@ function createMcpServer() {
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No response returned from GPT." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No response returned from GPT.",
+          },
+        ],
       };
     }
   );
@@ -95,7 +100,12 @@ ${transcript}
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No analysis returned." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No analysis returned.",
+          },
+        ],
       };
     }
   );
@@ -189,7 +199,12 @@ ${content_summary}
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No governance brief returned." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No governance brief returned.",
+          },
+        ],
       };
     }
   );
@@ -238,7 +253,135 @@ Generate a polished visual prompt suitable for Canva, image generation, or socia
 `;
 
       return {
-        content: [{ type: "text", text: prompt }],
+        content: [
+          {
+            type: "text",
+            text: prompt,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "design_review",
+    "Review a generated design against brand governance, readability, visual hierarchy, engagement, and technical quality.",
+    {
+      design_type: z.string().describe("Design type such as thumbnail, carousel, slide, infographic, landing page, course cover."),
+      design_goal: z.string().describe("The purpose of the design."),
+      target_audience: z.string().describe("Who will see or use this design."),
+      design_description: z.string().describe("Detailed description of the generated design, including text, layout, colors, avatar usage, and visual elements."),
+      brand_style: z.string().optional().describe("Brand style to compare against, default is Looney Tunes Style."),
+    },
+    async ({
+      design_type,
+      design_goal,
+      target_audience,
+      design_description,
+      brand_style,
+    }) => {
+      const prompt = `
+أنت مراجع تصميم بصري محترف داخل نظام Knowledge Engine.
+
+مهمتك مراجعة التصميم بعد إنشائه، وليس إنشاء تصميم جديد.
+
+نوع التصميم:
+${design_type}
+
+هدف التصميم:
+${design_goal}
+
+الجمهور المستهدف:
+${target_audience}
+
+الأسلوب البصري المطلوب:
+${brand_style || process.env.AVATAR_STYLE || "Looney Tunes Style"}
+
+وصف التصميم:
+${design_description}
+
+راجع التصميم بناءً على المعايير التالية:
+
+1. Brand Compliance / 100
+- هل التصميم ملتزم بالهوية؟
+- هل الأسلوب قريب من Looney Tunes Style إذا كان مطلوبًا؟
+- هل الأفاتار ثابت الهوية ولم يتم تغيير ملامحه؟
+
+2. Readability / 100
+- وضوح النص
+- حجم الخط
+- التباين
+- سهولة القراءة على الجوال
+
+3. Visual Hierarchy / 100
+- وضوح العنوان الرئيسي
+- ترتيب العناصر
+- توجيه عين المشاهد
+
+4. Engagement / 100
+- هل التصميم جذاب؟
+- هل يثير الفضول؟
+- هل مناسب للسوشال ميديا أو الاستخدام المطلوب؟
+
+5. Technical Quality / 100
+- المحاذاة
+- الهوامش
+- جودة الصور
+- عدم وجود تشويه
+- عدم وجود ازدحام بصري
+
+أخرج النتيجة بالعربية وبالشكل التالي:
+
+التقييم العام:
+/100
+
+Brand Compliance:
+/100
+
+Readability:
+/100
+
+Visual Hierarchy:
+/100
+
+Engagement:
+/100
+
+Technical Quality:
+/100
+
+نقاط القوة:
+-
+
+المشاكل:
+-
+
+التحسينات المطلوبة:
+-
+
+القرار النهائي:
+PASS أو CONDITIONAL PASS أو REJECT
+
+قاعدة القرار:
+- PASS إذا كان التقييم العام 85 أو أعلى ولا توجد مشكلة جوهرية.
+- CONDITIONAL PASS إذا كان التقييم من 70 إلى 84 أو يحتاج تعديلات بسيطة.
+- REJECT إذا كان أقل من 70 أو توجد مشاكل جوهرية في الهوية أو القراءة.
+
+سبب القرار:
+`;
+
+      const response = await openai.responses.create({
+        model: process.env.OPENAI_MODEL || "gpt-5.5",
+        input: prompt,
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No design review returned.",
+          },
+        ],
       };
     }
   );
@@ -255,7 +398,13 @@ app.get("/health", (req, res) => {
     status: "ok",
     openai_key_loaded: Boolean(process.env.OPENAI_API_KEY),
     model: process.env.OPENAI_MODEL || "gpt-5.5",
-    tools: ["ask_gpt", "analyze_lesson_to_lab", "design_governance", "avatar_prompt"],
+    tools: [
+      "ask_gpt",
+      "analyze_lesson_to_lab",
+      "design_governance",
+      "avatar_prompt",
+      "design_review",
+    ],
   });
 });
 
