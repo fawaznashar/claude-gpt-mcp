@@ -232,7 +232,7 @@ async function generateAvatarImageTextOnly(prompt) {
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "2.0.0",
+    version: "2.1.0",
   });
 
   server.tool(
@@ -510,6 +510,138 @@ ${prompt}
   );
 
   server.tool(
+    "design_to_image",
+    "Create a professional design brief then generate the final image using GPT Image.",
+    {
+      project_name: z.string(),
+      design_goal: z.string(),
+      target_audience: z.string(),
+      content_summary: z.string(),
+      visual_style: z.string().optional(),
+      output_type: z.string().optional(),
+      include_avatar: z.boolean().optional(),
+    },
+    async ({
+      project_name,
+      design_goal,
+      target_audience,
+      content_summary,
+      visual_style,
+      output_type,
+      include_avatar,
+    }) => {
+      const briefPrompt = `
+You are a world-class Creative Director.
+
+Project:
+${project_name}
+
+Goal:
+${design_goal}
+
+Audience:
+${target_audience}
+
+Content:
+${content_summary}
+
+Visual Style:
+${visual_style || "Premium Saudi Futuristic"}
+
+Output Type:
+${output_type || "banner"}
+
+Create a complete visual concept including:
+- Main Scene
+- Composition
+- Camera Angle
+- Lighting
+- Mood
+- Color Palette
+- Visual Hierarchy
+- Thumbnail Optimization
+- Empty Space for Titles
+- Visual Storytelling
+
+Important Rules:
+- Do not output SVG.
+- Do not output code.
+- Do not include markdown.
+- Return only the final image-generation prompt.
+- If Arabic text is needed, leave clean empty space for later text overlay instead of drawing Arabic text inside the image.
+`;
+
+      const briefResponse = await openai.responses.create({
+        model: process.env.OPENAI_MODEL || "gpt-5.5",
+        input: briefPrompt,
+      });
+
+      const imagePrompt = briefResponse.output_text || "";
+
+      const finalPrompt = `
+${imagePrompt}
+
+${include_avatar
+  ? `Use the attached Fawaz Avatar reference image as the character identity.
+Keep the same face and identity from the reference image.
+Do not redesign the character.
+Do not create a different person.
+Change only pose, expression, clothing details, environment, and lighting.`
+  : ""}
+
+Generate a polished final image, not SVG, not code.
+`;
+
+      let image;
+      let generationMode = include_avatar ? "design_to_image_reference" : "design_to_image_text";
+
+      try {
+        if (include_avatar) {
+          image = await generateAvatarImageWithReference(finalPrompt);
+        } else {
+          image = await generateAvatarImageTextOnly(finalPrompt);
+        }
+      } catch (error) {
+        if (process.env.IMAGE_FALLBACK_TO_TEXT === "true") {
+          generationMode = "design_to_image_text_fallback";
+          image = await generateAvatarImageTextOnly(finalPrompt);
+        } else {
+          throw error;
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `
+Design Generated Successfully.
+
+Project:
+${project_name}
+
+Output Type:
+${output_type || "banner"}
+
+Generation Mode:
+${generationMode}
+
+Image URL:
+${image.fullUrl}
+
+Creative Brief:
+${imagePrompt}
+
+Final Prompt:
+${finalPrompt}
+`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "design_review",
     "Review a generated design against brand governance and quality standards.",
     {
@@ -707,13 +839,14 @@ app.get("/health", (req, res) => {
     image_model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-1",
     image_size: process.env.OPENAI_IMAGE_SIZE || "1024x1024",
     save_mode: "google_sheets_only",
-    version: "2.0.0",
+    version: "2.1.0",
     tools: [
       "ask_gpt",
       "analyze_lesson_to_lab",
       "design_governance",
       "avatar_prompt",
       "generate_avatar_image",
+      "design_to_image",
       "design_review",
       "save_knowledge_card",
     ],
