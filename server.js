@@ -96,7 +96,14 @@ async function ensureKnowledgeBankHeader(sheets, spreadsheetId) {
   }
 }
 
-function buildAvatarPrompt({ topic, emotion, pose, scene, output_type, extra_instructions }) {
+function buildAvatarPrompt({
+  topic,
+  emotion,
+  pose,
+  scene,
+  output_type,
+  extra_instructions,
+}) {
   const avatarImageUrl = process.env.AVATAR_IMAGE_URL || "";
   const avatarStyle = process.env.AVATAR_STYLE || "Looney Tunes Style";
   const avatarName = process.env.AVATAR_NAME || "Fawaz Avatar";
@@ -184,7 +191,7 @@ async function generateImageWithOpenAI(prompt) {
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "1.8.0",
+    version: "1.9.0",
   });
 
   server.tool(
@@ -200,7 +207,12 @@ function createMcpServer() {
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No response returned from GPT." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No response returned from GPT.",
+          },
+        ],
       };
     }
   );
@@ -251,7 +263,12 @@ ${transcript}
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No analysis returned." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No analysis returned.",
+          },
+        ],
       };
     }
   );
@@ -316,7 +333,12 @@ ${content_summary}
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No governance brief returned." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No governance brief returned.",
+          },
+        ],
       };
     }
   );
@@ -325,25 +347,30 @@ ${content_summary}
     "avatar_prompt",
     "Generate a reusable prompt using the fixed Fawaz Avatar reference.",
     {
-      topic: z.string(),
-      emotion: z.string().default("confident"),
-      pose: z.string().default("standing and explaining"),
-      scene: z.string().default("modern digital classroom"),
-      output_type: z.string().default("educational thumbnail"),
-      extra_instructions: z.string().optional(),
+      topic: z.string().describe("The topic of the image."),
+      emotion: z.string().optional().describe("Avatar emotion, example: excited, confident, thinking."),
+      pose: z.string().optional().describe("Avatar pose, example: pointing to a smart board."),
+      scene: z.string().optional().describe("Scene/background, example: modern digital classroom."),
+      output_type: z.string().optional().describe("Output format, example: YouTube thumbnail."),
+      extra_instructions: z.string().optional().describe("Any extra visual instructions."),
     },
     async ({ topic, emotion, pose, scene, output_type, extra_instructions }) => {
       const prompt = buildAvatarPrompt({
         topic,
-        emotion,
-        pose,
-        scene,
-        output_type,
+        emotion: emotion || "confident",
+        pose: pose || "standing and explaining",
+        scene: scene || "modern digital classroom",
+        output_type: output_type || "educational thumbnail",
         extra_instructions,
       });
 
       return {
-        content: [{ type: "text", text: prompt }],
+        content: [
+          {
+            type: "text",
+            text: prompt,
+          },
+        ],
       };
     }
   );
@@ -352,12 +379,12 @@ ${content_summary}
     "generate_avatar_image",
     "Generate an image using the fixed Fawaz Avatar identity and OpenAI image generation.",
     {
-      topic: z.string(),
-      emotion: z.string().default("confident"),
-      pose: z.string().default("standing and explaining"),
-      scene: z.string().default("modern digital classroom"),
-      output_type: z.string().default("educational thumbnail"),
-      extra_instructions: z.string().optional(),
+      topic: z.string().describe("The topic of the image."),
+      emotion: z.string().optional().describe("Avatar emotion, example: excited, confident, thinking."),
+      pose: z.string().optional().describe("Avatar pose, example: pointing to a smart board."),
+      scene: z.string().optional().describe("Scene/background, example: modern digital classroom."),
+      output_type: z.string().optional().describe("Output format, example: YouTube thumbnail."),
+      extra_instructions: z.string().optional().describe("Any extra visual instructions."),
     },
     async ({ topic, emotion, pose, scene, output_type, extra_instructions }) => {
       if (!process.env.AVATAR_IMAGE_URL) {
@@ -366,10 +393,10 @@ ${content_summary}
 
       const prompt = buildAvatarPrompt({
         topic,
-        emotion,
-        pose,
-        scene,
-        output_type,
+        emotion: emotion || "confident",
+        pose: pose || "standing and explaining",
+        scene: scene || "modern digital classroom",
+        output_type: output_type || "educational thumbnail",
         extra_instructions,
       });
 
@@ -399,6 +426,9 @@ ${image.fileName}
 
 Local URL:
 ${image.localUrl}
+
+Full Image URL:
+https://claude-gpt-mcp.onrender.com${image.localUrl}
 
 Prompt Used:
 ${prompt}
@@ -458,7 +488,12 @@ ${design_description}
       });
 
       return {
-        content: [{ type: "text", text: response.output_text || "No design review returned." }],
+        content: [
+          {
+            type: "text",
+            text: response.output_text || "No design review returned.",
+          },
+        ],
       };
     }
   );
@@ -501,7 +536,8 @@ ${design_description}
       const auth = getGoogleAuth();
       const sheets = google.sheets({ version: "v4", auth });
 
-      const spreadsheetId = knowledge_bank_sheet_id || process.env.KNOWLEDGE_BANK_SHEET_ID || "";
+      const spreadsheetId =
+        knowledge_bank_sheet_id || process.env.KNOWLEDGE_BANK_SHEET_ID || "";
 
       if (!spreadsheetId) {
         throw new Error("KNOWLEDGE_BANK_SHEET_ID is missing.");
@@ -577,7 +613,11 @@ This version saves to Google Sheets only. Google Docs creation is disabled tempo
 }
 
 const generatedDir = process.env.GENERATED_IMAGES_DIR || "generated_images";
-app.use(`/${generatedDir}`, express.static(path.join(process.cwd(), generatedDir)));
+
+app.use(
+  `/${generatedDir}`,
+  express.static(path.join(process.cwd(), generatedDir))
+);
 
 app.get("/", (req, res) => {
   res.status(200).send("Claude GPT MCP server is running. MCP endpoint: /mcp");
