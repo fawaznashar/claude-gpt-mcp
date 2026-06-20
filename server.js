@@ -6,10 +6,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 if (!process.env.OPENAI_API_KEY) {
-  console.warn("WARNING: OPENAI_API_KEY is missing. Add it to .env locally or Render Environment Variables.");
+  console.warn("WARNING: OPENAI_API_KEY is missing.");
 }
 
 const openai = new OpenAI({
@@ -19,7 +19,7 @@ const openai = new OpenAI({
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "1.0.0",
+    version: "1.1.0",
   });
 
   server.tool(
@@ -35,12 +35,67 @@ function createMcpServer() {
       });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: response.output_text || "No response returned from GPT.",
-          },
-        ],
+        content: [{ type: "text", text: response.output_text || "No response returned from GPT." }],
+      };
+    }
+  );
+
+  server.tool(
+    "analyze_lesson_to_lab",
+    "Analyze an Arabic course lesson transcript, extract skills, build a knowledge card, and generate a learning report.",
+    {
+      lesson_title: z.string().describe("Title of the lesson or video."),
+      course_name: z.string().optional().describe("Name of the course if available."),
+      target_audience: z.string().optional().describe("Who this lesson is for."),
+      transcript: z.string().min(50).describe("Full lesson transcript from YouTube or any course."),
+    },
+    async ({ lesson_title, course_name, target_audience, transcript }) => {
+      const prompt = `
+أنت نظام Knowledge Skills Engine متخصص في تحويل ترانسكربت الدورات إلى بنك معرفة قابل لإعادة الاستخدام.
+
+حلل الدرس التالي بعمق، ولا تلخصه فقط.
+
+اسم الدورة:
+${course_name || "غير محدد"}
+
+عنوان الدرس:
+${lesson_title}
+
+الجمهور المستهدف:
+${target_audience || "غير محدد"}
+
+الترانسكربت:
+${transcript}
+
+أخرج النتيجة بالعربية وبصيغة منظمة تشمل:
+1. ملخص تنفيذي للدرس
+2. المهارات المستخرجة:
+- اسم المهارة
+- نوعها
+- المستوى
+- أين ظهرت في الدرس
+- كيف نستفيد منها عمليًا
+3. المفاهيم الجوهرية
+4. خطوات قابلة للتطبيق
+5. تمارين عملية
+6. أسئلة اختبار
+7. أسلوب المدرب
+8. رحلة العميل المرتبطة بالدرس
+9. بطاقة معرفة Knowledge Card
+10. تقرير الاستفادة:
+- مهارات جديدة
+- مهارات تم تعزيزها
+- فرص تحويل الدرس إلى دورة أو منتج رقمي
+- اقتراحات لدروس تالية
+`;
+
+      const response = await openai.responses.create({
+        model: process.env.OPENAI_MODEL || "gpt-5.5",
+        input: prompt,
+      });
+
+      return {
+        content: [{ type: "text", text: response.output_text || "No analysis returned." }],
       };
     }
   );
@@ -83,6 +138,7 @@ app.post("/mcp", async (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
+
 app.listen(port, () => {
   console.log(`MCP server running on http://localhost:${port}`);
 });
