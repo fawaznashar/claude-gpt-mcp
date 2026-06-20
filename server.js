@@ -1,6 +1,6 @@
 import "dotenv/config";
 import express from "express";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 import { google } from "googleapis";
 import { z } from "zod";
 import fs from "fs";
@@ -18,6 +18,10 @@ if (!process.env.OPENAI_API_KEY) {
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+function getBaseUrl() {
+  return process.env.PUBLIC_BASE_URL || "https://claude-gpt-mcp.onrender.com";
+}
 
 function getGoogleAuth() {
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
@@ -104,15 +108,11 @@ function buildAvatarPrompt({
   output_type,
   extra_instructions,
 }) {
-  const avatarImageUrl = process.env.AVATAR_IMAGE_URL || "";
   const avatarStyle = process.env.AVATAR_STYLE || "Looney Tunes Style";
   const avatarName = process.env.AVATAR_NAME || "Fawaz Avatar";
 
   return `
-Create an image using the fixed reference avatar.
-
-Reference Avatar URL:
-${avatarImageUrl}
+Use the attached reference image as the fixed identity source for the character.
 
 Avatar Name:
 ${avatarName}
@@ -121,11 +121,12 @@ Visual Style:
 ${avatarStyle}
 
 Core Identity Rules:
-- Keep the same avatar identity.
+- Preserve the same face identity from the reference image.
+- Preserve the same character identity.
 - Do not redesign the face.
-- Do not change the character identity.
-- Only change the expression, emotion, pose, outfit details, and scene based on the topic.
-- Keep the avatar suitable for educational and professional content.
+- Do not create a different person.
+- Change only expression, emotion, pose, outfit details, and scene.
+- Keep it suitable for educational, professional, and content-creator use.
 
 Topic:
 ${topic}
@@ -149,22 +150,33 @@ Image Requirements:
 - High quality.
 - Clean composition.
 - Strong visual storytelling.
+- Expressive avatar.
 - Suitable for thumbnails, course banners, social posts, and educational content.
-- Make the avatar expressive and clearly connected to the topic.
 `;
 }
 
-async function generateImageWithOpenAI(prompt) {
-  const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+async function getAvatarReferenceFile() {
+  if (!process.env.AVATAR_IMAGE_URL) {
+    throw new Error("AVATAR_IMAGE_URL is missing.");
+  }
 
-  const result = await openai.images.generate({
-    model,
-    prompt,
-    size: "1024x1024",
+  const response = await fetch(process.env.AVATAR_IMAGE_URL);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch AVATAR_IMAGE_URL. Status: ${response.status}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  const contentType = response.headers.get("content-type") || "image/png";
+
+  return await toFile(buffer, "fawaz-avatar.png", {
+    type: contentType,
   });
+}
 
-  const imageBase64 = result.data?.[0]?.b64_json;
-
+function saveImageBase64(imageBase64) {
   if (!imageBase64) {
     throw new Error("No image returned from OpenAI.");
   }
@@ -185,13 +197,42 @@ async function generateImageWithOpenAI(prompt) {
     fileName,
     filePath,
     localUrl: `/${generatedDir}/${fileName}`,
+    fullUrl: `${getBaseUrl()}/${generatedDir}/${fileName}`,
   };
+}
+
+async function generateAvatarImageWithReference(prompt) {
+  const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+  const avatarReferenceFile = await getAvatarReferenceFile();
+
+  const result = await openai.images.edit({
+    model,
+    image: avatarReferenceFile,
+    prompt,
+    size: process.env.OPENAI_IMAGE_SIZE || "1024x1024",
+  });
+
+  const imageBase64 = result.data?.[0]?.b64_json;
+  return saveImageBase64(imageBase64);
+}
+
+async function generateAvatarImageTextOnly(prompt) {
+  const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+
+  const result = await openai.images.generate({
+    model,
+    prompt,
+    size: process.env.OPENAI_IMAGE_SIZE || "1024x1024",
+  });
+
+  const imageBase64 = result.data?.[0]?.b64_json;
+  return saveImageBase64(imageBase64);
 }
 
 function createMcpServer() {
   const server = new McpServer({
     name: "claude-gpt-mcp",
-    version: "1.9.0",
+    version: "2.0.0",
   });
 
   server.tool(
@@ -377,7 +418,7 @@ ${content_summary}
 
   server.tool(
     "generate_avatar_image",
-    "Generate an image using the fixed Fawaz Avatar identity and OpenAI image generation.",
+    "Generate an image using the fixed Fawaz Avatar reference image and OpenAI image editing.",
     {
       topic: z.string().describe("The topic of the image."),
       emotion: z.string().optional().describe("Avatar emotion, example: excited, confident, thinking."),
@@ -385,12 +426,17 @@ ${content_summary}
       scene: z.string().optional().describe("Scene/background, example: modern digital classroom."),
       output_type: z.string().optional().describe("Output format, example: YouTube thumbnail."),
       extra_instructions: z.string().optional().describe("Any extra visual instructions."),
+      use_reference_image: z.boolean().optional().describe("Use avatar reference image. Default true."),
     },
-    async ({ topic, emotion, pose, scene, output_type, extra_instructions }) => {
-      if (!process.env.AVATAR_IMAGE_URL) {
-        throw new Error("AVATAR_IMAGE_URL is missing.");
-      }
-
+    async ({
+      topic,
+      emotion,
+      pose,
+      scene,
+      output_type,
+      extra_instructions,
+      use_reference_image,
+    }) => {
       const prompt = buildAvatarPrompt({
         topic,
         emotion: emotion || "confident",
@@ -400,7 +446,25 @@ ${content_summary}
         extra_instructions,
       });
 
-      const image = await generateImageWithOpenAI(prompt);
+      const shouldUseReference = use_reference_image !== false;
+      let image;
+      let generationMode = "image_edit_reference";
+
+      try {
+        if (shouldUseReference) {
+          image = await generateAvatarImageWithReference(prompt);
+        } else {
+          generationMode = "text_to_image";
+          image = await generateAvatarImageTextOnly(prompt);
+        }
+      } catch (error) {
+        if (process.env.IMAGE_FALLBACK_TO_TEXT === "true") {
+          generationMode = "text_to_image_fallback";
+          image = await generateAvatarImageTextOnly(prompt);
+        } else {
+          throw error;
+        }
+      }
 
       return {
         content: [
@@ -415,11 +479,17 @@ OpenAI
 Model:
 ${process.env.OPENAI_IMAGE_MODEL || "gpt-image-1"}
 
+Generation Mode:
+${generationMode}
+
 Avatar:
 ${process.env.AVATAR_NAME || "Fawaz Avatar"}
 
 Style:
 ${process.env.AVATAR_STYLE || "Looney Tunes Style"}
+
+Reference Image Used:
+${shouldUseReference ? "Yes" : "No"}
 
 File:
 ${image.fileName}
@@ -428,7 +498,7 @@ Local URL:
 ${image.localUrl}
 
 Full Image URL:
-https://claude-gpt-mcp.onrender.com${image.localUrl}
+${image.fullUrl}
 
 Prompt Used:
 ${prompt}
@@ -631,10 +701,13 @@ app.get("/health", (req, res) => {
     google_drive_folder_loaded: Boolean(process.env.GOOGLE_DRIVE_FOLDER_ID),
     knowledge_bank_sheet_loaded: Boolean(process.env.KNOWLEDGE_BANK_SHEET_ID),
     avatar_image_loaded: Boolean(process.env.AVATAR_IMAGE_URL),
+    avatar_reference_mode: "image_edit",
     image_provider: process.env.IMAGE_PROVIDER || "openai",
     model: process.env.OPENAI_MODEL || "gpt-5.5",
     image_model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-1",
+    image_size: process.env.OPENAI_IMAGE_SIZE || "1024x1024",
     save_mode: "google_sheets_only",
+    version: "2.0.0",
     tools: [
       "ask_gpt",
       "analyze_lesson_to_lab",
